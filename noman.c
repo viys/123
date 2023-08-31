@@ -30,6 +30,9 @@ uint8 noman_televise(Noman_CB Noman)
 		}
 	}else{
 		ret = call_noman(&MyNomanCB,MyNomanCB.hostStatus);
+		if(ret==0){
+			ret = call_noman(&MyNomanCB,MyNomanCB.hostStatus);
+		}
 		if(ret==2){
 			/*轮呼完毕*/
 			MyNomanCB.hostStatus = 0;
@@ -95,16 +98,21 @@ uint8 call_noman(Noman_CB* Noman, uint8 hostID)
 {
     uint8 ret = 0;
     
-    if((Noman->Out == Noman->End && Noman->hostStatus == Noman->hostNum) || (Noman->host[3].nomanNum != 0 && Noman->Out == Noman->host[3].ptrEnd-15) || Noman->Out == (char*)&(Noman->host[Noman->hostNum - 1].imei)){
+    if((Noman->host[3].ptrOut == Noman->host[3].ptrEnd) 
+	&& ((Noman->Out == Noman->End && Noman->hostStatus == Noman->hostNum) || 
+	(Noman->host[3].nomanNum != 0 && Noman->Out == Noman->host[3].ptrEnd-15) || 
+	Noman->Out == (char*)&(Noman->host[Noman->hostNum - 1].imei))){
+			
 			/*拨打至三级无人值守或多级呼叫的最后一级*/
 			cancel_imei(Noman->Out);
-			MyNomanCB.Out = MyNomanCB.Start;
+			Noman->Out = Noman->Start;
 			return 2;  
 	}
 	/*如果本级下次轮呼无效则立马调至下一级*/
-//	if(Noman->host[hostID].ptrOut == Noman->host[hostID].ptrEnd && (Noman->hostStatus < Noman->hostNum)){
+//	if(Noman->host[hostID].ptrOut == Noman->host[hostID].ptrEnd && (Noman->host[hostID+1].nomanNum != 0 || Noman->host[hostID+1].imei[1] != 0)){
 //    	Noman->hostStatus++;
 //		hostID++;
+//		printf("hostID %d:",hostID);
 //	}
 	/*正常逻辑*/
 	if(Noman->host[hostID].nomanNum != 0){
@@ -119,7 +127,8 @@ uint8 call_noman(Noman_CB* Noman, uint8 hostID)
 					cancel_imei(Noman->host[hostID].ptrOut - 15);
 				}
             }else{
-            	cancel_imei(Noman->Out);
+            	/*这里可能会出问题*/
+//            	cancel_imei(Noman->Out);
 			}
             /*拨打*/
             call_imei(Noman->host[hostID].ptrOut);

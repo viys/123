@@ -7,9 +7,18 @@
  * 
  * @copyright Copyright (c) 2023
  * 
+ *	产生呼叫时先去查看主机状态若主机双开则直接呼叫无人值守,直至本主机轮询完毕
+ *	若主机单开,则先呼叫主机,再轮询无人值守
+ *	若分机双开则直接呼叫无人值守,不呼叫其他主机
+ *
+ *	无人值守号码轮训函数
+ *
+ *	主机状态判断并拨打函数
+ *
+ *	返回值 0:未产生拨打,1: 产生拨打,但未轮询完毕 2:轮训完毕 3:拨打结束 
  */
+
 #include "noman.h"
-#include "string.h"
 
 /*所有的无人值守IMEI存放区*/
 char aNI[NOMAN_NUM][15];
@@ -17,50 +26,169 @@ char aNI[NOMAN_NUM][15];
 /*无人值守控制块*/
 /*第四级为分机无人值守*/
 Noman_CB MyNomanCB;
+NomanAPI MyNomanAPI;
 
-uint8 noman_televise(Noman_CB Noman)
+void noman_init(NomanAPI* API, Noman_CB* Noman)
 {
-	uint8 ret = 0;
-	if(MyNomanCB.host[3].nomanNum != 0){
+    /*API对接*/
+    API->call_imei = my_call_noman;
+    API->cancel_imei = my_cancel_noman;
+	
+	Noman->Last = NULL;
+    Noman->Mutex = 0;
+}
+
+uint8 noman_televise(Noman_CB* Noman, uint8 ch)
+{
+    uint8 ret = 0;
+	
+	if(Noman->host[3].nomanNum != 0 && Noman->host[3].nomanStatus != 0){
 		/*如果分机开启无人值守*/ 
-		ret = call_noman(&MyNomanCB,3);
-		if(ret==2){
+		ret = noman_host_branch(Noman,3, ch);
+		if(ret==3){
 			/*轮呼完毕*/
+			cancel_imei(Noman->Last, ch);
 			printf("轮呼完毕\r\n");
+		}
+	}else if(Noman->hostStatus<Noman->hostNum){
+		/*防止末级主机双关,重复进入*/
+		ret = noman_host_branch(Noman, Noman->hostStatus, ch);
+		if(ret==3){
+			/*轮呼完毕*/
+			Noman->hostStatus = 0;
+			cancel_imei(Noman->Last, ch);
+			printf("轮呼完毕\r\n");
+		}else if(ret==2){
+			Noman->hostStatus++;
+			printf("转下一级\r\n");	
 		}
 	}else{
-		ret = call_noman(&MyNomanCB,MyNomanCB.hostStatus);
-		if(ret==0){
-			ret = call_noman(&MyNomanCB,MyNomanCB.hostStatus);
-		}
-		if(ret==2){
-			/*轮呼完毕*/
-			MyNomanCB.hostStatus = 0;
-			printf("轮呼完毕\r\n");
-		}else if(ret==1){
-			MyNomanCB.hostStatus++;
+		cancel_imei(Noman->Last, ch);
+		ret = 3;
+	}
+	return ret;
+}
+
+/*无人值守轮训函数*/
+/*第二次进来判断的时候要直接拨打下一级*/
+uint8 noman_recursion(Noman_CB* Noman, uint8 hostID, uint8 ch){
+	uint8 ret = 0;
+	/*进入此函数,默认该主机下帮有无人值守号码*/
+	
+	if(Noman->Out == Noman->End || Noman->host[3].ptrOut >= Noman->host[3].ptrEnd){
+	/*全部播完判断*/
+		ret = 3;
+	}else if(Noman->host[hostID].ptrOut < Noman->host[hostID].ptrEnd){
+		/*该级主机下无人值守号码未轮询完毕*/
+		
+		/*呼叫下一个无人值守号码*/
+		call_imei(Noman->host[hostID].ptrOut, ch, Noman);
+		
+		/*地址移位处理*/
+		Noman->Out = Noman->host[hostID].ptrOut;
+		Noman->Last = Noman->Out;
+		Noman->host[hostID].ptrOut += 15;
+		/*拨打一次*/
+		ret = 1;
+		
+		if(Noman->host[hostID].ptrOut >= Noman->host[hostID].ptrEnd){
+			/*本级轮询完毕标志位处理*/
+			Noman->host[hostID].ptrOut == Noman->host[hostID].ptrStart;
+			Noman->host[hostID].callStatus = Noman->host[hostID].nomanStatus;
+			/*轮询完毕*/
+			ret = 2;
 		}
 	}
 	return ret;
 }
 
-int noman_imei_parse(char *data)
+/*无人值守开关判断*/
+uint8 noman_host_judge(Noman_CB* Noman, uint8 hostID)
+{
+	int ret = 0; 
+	if((Noman->host[hostID].nomanStatus == 1 || Noman->host[hostID].callStatus == 1) && Noman->host[hostID].nomanNum != 0){
+		/*无人值守状态标志位为1,无人值守功能号码不为零*/
+		/*双开*/
+		ret = 2;
+	}else if(Noman->host[hostID].nomanStatus == 0 && Noman->host[hostID].nomanNum != 0){
+		/*无人值守状态标志位为0,无人值守功能号码不为零*/
+		/*单开*/
+		/*查询一次单开后,主机状态下次判断为双开*/
+		Noman->host[hostID].callStatus = 1;
+		ret = 1;
+	}else if(Noman->host[hostID].nomanNum == 0 || Noman->host[hostID].nomanStatus == 0){
+		/*无人值守状态标志位为0,无人值守功能号码为零,并包含无人值守状态为1,但无功能号码*/
+		/*双关*/
+		ret = 0;
+	}
+	return ret;
+}
+
+/*双开只拨打无人值守*/
+uint8 noman_host_branch(Noman_CB* Noman, uint8 hostID, uint8 ch)
+{
+	int ret = 0;
+	
+	switch(noman_host_judge(Noman, hostID)){
+		case 0:
+			/*双关*/
+			/*呼叫主机*/
+			call_imei(Noman->host[hostID].imei, ch, Noman);
+			/*双关,直接返回本级拨打完毕*/
+			ret = 2;
+			break;
+		case 1:
+			/*单开*/
+			/*呼叫主机*/
+			call_imei(Noman->host[hostID].imei, ch, Noman);
+			/*继续轮询*/
+			ret = 1;
+			break;
+		case 2:
+			/*双开*/
+			ret = noman_recursion(Noman, hostID, ch);
+			break;
+		default:
+			break;
+	}
+
+	return ret;
+}
+
+int aid_imei_parse(Noman_CB* Noman, char *data)
+{
+	Noman->Aid.num = sscanf(data,"1%[0-9],",Noman->Aid.imei);
+	if(strlen(Noman->Aid.imei)==11){
+		memcpy(&Noman->Aid.imei[11],"0000",4);
+	}
+	return Noman->Aid.num;
+}
+
+int noman_status_parse(Noman_CB* Noman, char* data)
+{
+    uint8 ret = 0;
+    ret = sscanf(data,"s%d.%d.%d.%d",&Noman->host[0].nomanStatus,&Noman->host[1].nomanStatus,&Noman->host[2].nomanStatus,&Noman->host[3].nomanStatus);
+    printf("NOMAN STAUS HostI:%d HostII:%d HostIII:%d Slave:%d\r\n",Noman->host[0].nomanStatus,Noman->host[1].nomanStatus,Noman->host[2].nomanStatus,Noman->host[3].nomanStatus);
+    return ret;
+}
+
+int noman_imei_parse(Noman_CB* Noman, char *data)
 {
     uint8 ret = 0;
     memset(aNI,0x00,sizeof(aNI));
     /*解析各级主机对应的无人值守号码数*/
-    ret = sscanf(data,"s%d.%d.%d.%d.",
-                &MyNomanCB.host[0].nomanNum, &MyNomanCB.host[1].nomanNum, &MyNomanCB.host[2].nomanNum, &MyNomanCB.host[3].nomanNum);
+    ret = sscanf(data,"c%d.%d.%d.%d.",
+                &Noman->host[0].nomanNum, &Noman->host[1].nomanNum, &Noman->host[2].nomanNum, &Noman->host[3].nomanNum);
     data += 9;
 
     /*计算无人值守总号码数*/
-    MyNomanCB.allNum = MyNomanCB.host[0].nomanNum + MyNomanCB.host[1].nomanNum + MyNomanCB.host[2].nomanNum + MyNomanCB.host[3].nomanNum;
+    Noman->allNum = Noman->host[0].nomanNum + Noman->host[1].nomanNum + Noman->host[2].nomanNum + Noman->host[3].nomanNum;
     
-    printf("Noman IMEI num: %d\r\n",MyNomanCB.allNum);
-    printf("HostI num:%d,HostII num:%d,HostIII num:%d,Slave num:%d\r\n",MyNomanCB.host[0].nomanNum,MyNomanCB.host[1].nomanNum,MyNomanCB.host[2].nomanNum,MyNomanCB.host[3].nomanNum);
+    printf("Noman IMEI num: %d\r\n",Noman->allNum);
+    printf("HostI num:%d,HostII num:%d,HostIII num:%d,Slave num:%d\r\n",Noman->host[0].nomanNum,Noman->host[1].nomanNum,Noman->host[2].nomanNum,Noman->host[3].nomanNum);
     
 	/*解析无人值守IMEI*/
-    for(uint8 i=0; i<MyNomanCB.allNum; i++){
+    for(uint8 i=0; i<Noman->allNum; i++){
         ret = sscanf(data,"%[0-9],",aNI[i]);
         /**/
         data += strlen(aNI[i]) + 1;
@@ -72,114 +200,91 @@ int noman_imei_parse(char *data)
     }
 
     /*载入无人值守地址*/
-    MyNomanCB.hostStatus = 0;
-    MyNomanCB.Start = aNI[0];
-    MyNomanCB.Out = MyNomanCB.Start;
-    MyNomanCB.End = aNI[MyNomanCB.allNum-MyNomanCB.host[3].nomanNum-1];
-    MyNomanCB.host[0].ptrStart = MyNomanCB.Start;
-    MyNomanCB.host[0].ptrOut = MyNomanCB.host[0].ptrStart;
-    MyNomanCB.host[0].ptrEnd = MyNomanCB.host[0].ptrStart + MyNomanCB.host[0].nomanNum*15;
+    Noman->hostStatus = 0;
+    Noman->Start = aNI[0];
+    Noman->Out = Noman->Start;
+    Noman->End = Noman->Start + (Noman->allNum-Noman->host[3].nomanNum-1)*15;
+    Noman->host[0].ptrStart = Noman->Start;
+    Noman->host[0].ptrOut = Noman->host[0].ptrStart;
+    Noman->host[0].ptrEnd = Noman->host[0].ptrStart + Noman->host[0].nomanNum*15;
     for(uint8 i=1; i<4; i++){
-        MyNomanCB.host[i].ptrStart = MyNomanCB.host[i-1].ptrEnd;
-        MyNomanCB.host[i].ptrOut = MyNomanCB.host[i].ptrStart;
-        MyNomanCB.host[i].ptrEnd = MyNomanCB.host[i].ptrStart + MyNomanCB.host[i].nomanNum*15;
+        Noman->host[i].ptrStart = Noman->host[i-1].ptrEnd;
+        Noman->host[i].ptrOut = Noman->host[i].ptrStart;
+        Noman->host[i].ptrEnd = Noman->host[i].ptrStart + Noman->host[i].nomanNum*15;
     }
-    return MyNomanCB.allNum;
+    return Noman->allNum;
 }
 
-uint8 host_imei_parse(char *data)
+uint8 host_imei_parse(Noman_CB* Noman, char *data)
 {
-    MyNomanCB.hostNum = sscanf(data,"%[0-9],%[0-9],%[0-9],",MyNomanCB.host[0].imei,MyNomanCB.host[1].imei,MyNomanCB.host[2].imei);
-    return MyNomanCB.hostNum;
+    Noman->hostNum = sscanf(data,"%[0-9],%[0-9],%[0-9],",Noman->host[0].imei,Noman->host[1].imei,Noman->host[2].imei);
+    printf("HOST I:%s, HOST II:%s, HOSTI III:%s\r\n",Noman->host[0].imei,Noman->host[1].imei,Noman->host[2].imei);
+    return Noman->hostNum;
 }
 
-/*第二次进来判断的时候要直接拨打下一级*/
-uint8 call_noman(Noman_CB* Noman, uint8 hostID)
+void call_imei(char* imei, uint8 ch, Noman_CB* Noman)
 {
-    uint8 ret = 0;
-    
-    if((Noman->host[3].ptrOut == Noman->host[3].ptrEnd) 
-	&& ((Noman->Out == Noman->End && Noman->hostStatus == Noman->hostNum) || 
-	(Noman->host[3].nomanNum != 0 && Noman->Out == Noman->host[3].ptrEnd-15) || 
-	Noman->Out == (char*)&(Noman->host[Noman->hostNum - 1].imei))){
-			
-			/*拨打至三级无人值守或多级呼叫的最后一级*/
-			cancel_imei(Noman->Out);
-			Noman->Out = Noman->Start;
-			return 2;  
-	}
-	/*如果本级下次轮呼无效则立马调至下一级*/
-//	if(Noman->host[hostID].ptrOut == Noman->host[hostID].ptrEnd && (Noman->host[hostID+1].nomanNum != 0 || Noman->host[hostID+1].imei[1] != 0)){
-//    	Noman->hostStatus++;
-//		hostID++;
-//		printf("hostID %d:",hostID);
-//	}
-	/*正常逻辑*/
-	if(Noman->host[hostID].nomanNum != 0){
-        /*如果对应主机开启无人值守*/
-        printf("ID%d: | S-> %x | E-> %x | O-> %x |\r\n",hostID+1,Noman->host[hostID].ptrStart,Noman->host[hostID].ptrEnd,Noman->host[hostID].ptrOut);
-        if(Noman->host[hostID].ptrOut < Noman->host[hostID].ptrEnd){
-            /*取消上一次呼叫*/
-            if((Noman->host[hostID].ptrOut-15) >= Noman->Start){
-            	/*地址减1即为上次拨打的IMEI*/
-            	/*当分机开启无人值守后首次拨打不取消取消上级IMEI呼叫*/
-            	if(Noman->host[hostID].ptrOut != Noman->host[3].ptrStart){
-					cancel_imei(Noman->host[hostID].ptrOut - 15);
-				}
-            }else{
-            	/*这里可能会出问题*/
-//            	cancel_imei(Noman->Out);
-			}
-            /*拨打*/
-            call_imei(Noman->host[hostID].ptrOut);
-            /*保留此次拨号的IMEI*/
-            Noman->Out = Noman->host[hostID].ptrOut;
-            /*地址递增*/ 
-            Noman->host[hostID].ptrOut += 15;
-            if(Noman->host[hostID].ptrOut == Noman->host[hostID].ptrEnd)return 0;
-            
-            printf("ID%d: | O --> %x\r\n",hostID+1,Noman->host[hostID].ptrOut);
-            return 0;
-        	}else{
-	            /*无人值守拨打完毕*/
-	            MyNomanCB.host[hostID].ptrOut = MyNomanCB.host[hostID].ptrStart;
-	            return 1;
-        	}        
-    	}else{
-        /*未开启无人值守拨打对应主机*/		
-        if(hostID!=0){
-            cancel_imei(Noman->Out);
+	cancel_imei(Noman->Last, ch);
+    if(imei != NULL){
+        if(MyNomanAPI.call_imei != NULL){
+            MyNomanAPI.call_imei(imei, ch);
         }
-        
-        /*第四级为分级无人值守跳过此级的拨打主机*/
-		if(hostID == 3)return 1;
-		
-    	call_imei(Noman->host[hostID].imei);
-    	Noman->Out = Noman->host[hostID].imei;
-    	printf("拨打主机 Noman->Out: %x\r\n",Noman->Out);
-        /*主机拨打完毕*/
-        return 1;
+	}
+	Noman->Last = imei;
+}
+
+void cancel_imei(char* imei, uint8 ch)
+{
+	if(imei != NULL){
+        if(MyNomanAPI.cancel_imei != NULL){
+            MyNomanAPI.cancel_imei(imei, ch);
+        }
+	}
+}
+
+void noman_clear(Noman_CB* Noman)
+{
+    /*无人值守拨号指针归位*/
+    Noman->hostStatus = 0;
+    for(int i=0; i<3; i++){
+    	Noman->host[i].callStatus = Noman->host[i].nomanStatus;
+	}
+	
+    Noman->host[0].ptrStart = Noman->Start;
+    Noman->host[0].ptrOut = Noman->host[0].ptrStart;
+    Noman->host[0].ptrEnd = Noman->host[0].ptrStart + Noman->host[0].nomanNum*15;
+    for(uint8 i=1; i<4; i++){
+        Noman->host[i].ptrStart = Noman->host[i-1].ptrEnd;
+        Noman->host[i].ptrOut = Noman->host[i].ptrStart;
+        Noman->host[i].ptrEnd = Noman->host[i].ptrStart + Noman->host[i].nomanNum*15;
     }
 }
 
-void call_imei(char* imei)
+void noman_mutex_sw(Noman_CB* Noman, uint8 flag)
 {
-	char temp[15];
-	memcpy(temp,imei,15);
-	if(temp[0] != 0x00){
-		printf("Call IMEI: %s\r\n",temp);	
-	}else{
-		printf("号码出错\r\n");
-	} 
+    if(flag!=0){
+        /*开启互斥量*/
+        Noman->Mutex = 1;
+        printf("互斥量打开\r\n");
+    }else{
+        /*关闭互斥量*/
+        Noman->Mutex = 0;
+        printf("互斥量关闭\r\n");
+    }
 }
 
-void cancel_imei(char* imei)
+uint8 noman_mutex_get(Noman_CB* Noman)
 {
-	char temp[15];
-	memcpy(temp,imei,15);
-	if(imei[0] != 0x00){
-		printf("Cancel call IMEI: %s\r\n",temp);	
-	}else{
-		printf("号码出错\r\n");
-	}
+    return Noman->Mutex;
 }
+
+void my_call_noman(char* imei, uint8 ch)
+{
+	printf("呼叫: %15.15s\r\n",imei);
+}
+
+void my_cancel_noman(char* imei, uint8 ch)
+{
+	printf("取消呼叫: %15.15s\r\n",imei);
+}
+

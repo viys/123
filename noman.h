@@ -16,9 +16,6 @@
 #include "string.h" 
 
 #define NOMAN_NUM   15
-
-
-
 typedef struct
 {
     void (*call_imei)(char* imei, uint8 ch);
@@ -80,12 +77,13 @@ extern Noman_CB MyNomanCB;
 extern NomanAPI MyNomanAPI;
 
 /**
- * @brief 无人值守IMEI解析
+ * @brief 无人值守初始化函数
  * 
- * @param data 数据接入，首字符要为s
- * @return int 返回获取数量
+ * @param API API函数控制块
+ * @param Noman 无人值守控制块
+ * @note 需要自己外部编写
  */
-int noman_imei_parse(Noman_CB* Noman, char *data);
+void noman_init(NomanAPI* API, Noman_CB* Noman);
 
 /**
  * @brief 主机IMEI解析
@@ -97,57 +95,51 @@ int noman_imei_parse(Noman_CB* Noman, char *data);
 uint8 host_imei_parse(Noman_CB* Noman, char *data);
 
 /**
+ * @brief 无人值守IMEI解析
+ * 
+ * @param Noman 无人值守控制块
+ * @param data 数据接入，首字符要为c
+ * @return int 
+ */
+int noman_imei_parse(Noman_CB* Noman, char *data);
+
+/**
+ * @brief 无人值守状态解析函数
+ * 
+ * @param Noman 无人值守控制块
+ * @param data 数据接入，首字符要为s
+ * @return int 
+ */
+int noman_status_parse(Noman_CB* Noman, char* data);
+
+/**
+ * @brief 急救中心imei解析函数
+ * 
+ * @param Noman 无人值守控制块
+ * @param data 
+ * @return int 1ON 0OFF
+ */
+int aid_imei_parse(Noman_CB* Noman, char *data);
+
+/**
  * @brief 无人值守转播函数
  * 
  * @param Noman 无人值守控制块
- * @return uint8 0本级主机无人轮呼 1本级轮呼完毕 2全部完成
+ * @return uint8 0:未产生拨打,1: 产生拨打,但未轮询完毕 2:轮训完毕 3:拨打结束 
  */
 uint8 noman_televise(Noman_CB* Noman, uint8 ch);
 
 /**
- * @brief 无人值守拨号函数
- * 
- * @param Noman 无人值守控制块
- * @param hostID 主机ID
- * @return uint8 0本级主机无人轮呼 1本级轮呼完毕 2全部完成
- */
-uint8 call_noman(Noman_CB* Noman, uint8 hostID, uint8 ch);
-
-/**
- * @brief 呼叫函数
- * 
- * @param imei IMEI
- * @param ch 通道
- */
-void call_imei(char* imei, uint8 ch, Noman_CB* Noman);
-
-/**
- * @brief 取消呼叫函数
- * 
- * @param imei IMEI
- * @param ch 通道
- */
-void cancel_imei(char* imei, uint8 ch);
-
-/**
- * @brief 无人值守初始化函数
- * 
- * @param API 
- * @param Noman 
- */
-void noman_init(NomanAPI* API, Noman_CB* Noman);
-
-/**
  * @brief 无人值守指针归位函数
  * 
- * @param Noman 
+ * @param Noman 无人值守控制块
  */
 void noman_clear(Noman_CB* Noman);
 
 /**
- * @brief 无人值守互斥量
+ * @brief 无人值守互斥量切换函数
  * 
- * @param Noman 
+ * @param Noman 无人值守控制块
  * @param flag 1ON 0OFF
  */
 void noman_mutex_sw(Noman_CB* Noman, uint8 flag);
@@ -155,29 +147,17 @@ void noman_mutex_sw(Noman_CB* Noman, uint8 flag);
 /**
  * @brief 获取互斥量
  * 
- * @param Noman 
- * @return uint8 
+ * @param Noman 无人值守控制块
+ * @return uint8 0:互斥量关闭 1:互斥量打开
  */
 uint8 noman_mutex_get(Noman_CB* Noman);
 
 /**
- * @brief 急救中心imei解析函数
+ * @brief 需要自己编写的外部接口函数
  * 
- * @param Noman 
- * @param data 
- * @return int 1ON 0OFF
  */
-int aid_imei_parse(Noman_CB* Noman, char *data);
-
 void my_cancel_noman(char* imei, uint8 ch);
-
 void my_call_noman(char* imei, uint8 ch);
-
-int noman_status_parse(Noman_CB* Noman, char* data);
-
-uint8 noman_recursion(Noman_CB* Noman, uint8 hostID, uint8 ch);
-uint8 noman_host_judge(Noman_CB* Noman, uint8 hostID);
-uint8 noman_host_branch(Noman_CB* Noman, uint8 hostID, uint8 ch);
 
 #endif
 

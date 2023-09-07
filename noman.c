@@ -38,40 +38,48 @@ void noman_init(NomanAPI* API, Noman_CB* Noman)
     Noman->Mutex = 0;
 }
 
-uint8 noman_televise(Noman_CB* Noman, uint8 ch)
+/**
+ * @brief 取消呼叫函数
+ * 
+ * @param imei IMEI
+ * @param ch 通道号
+ */
+static void cancel_imei(char* imei, uint8 ch)
 {
-    uint8 ret = 0;
-	
-	if(Noman->host[3].nomanNum != 0 && Noman->host[3].nomanStatus != 0){
-		/*如果分机开启无人值守*/ 
-		ret = noman_host_branch(Noman,3, ch);
-		if(ret==3){
-			/*轮呼完毕*/
-			cancel_imei(Noman->Last, ch);
-			printf("轮呼完毕\r\n");
-		}
-	}else if(Noman->hostStatus<Noman->hostNum){
-		/*防止末级主机双关,重复进入*/
-		ret = noman_host_branch(Noman, Noman->hostStatus, ch);
-		if(ret==3){
-			/*轮呼完毕*/
-			Noman->hostStatus = 0;
-			cancel_imei(Noman->Last, ch);
-			printf("轮呼完毕\r\n");
-		}else if(ret==2){
-			Noman->hostStatus++;
-			printf("转下一级\r\n");	
-		}
-	}else{
-		cancel_imei(Noman->Last, ch);
-		ret = 3;
+	if(imei != NULL){
+        if(MyNomanAPI.cancel_imei != NULL){
+            MyNomanAPI.cancel_imei(imei, ch);
+        }
 	}
-	return ret;
 }
 
-/*无人值守轮训函数*/
-/*第二次进来判断的时候要直接拨打下一级*/
-uint8 noman_recursion(Noman_CB* Noman, uint8 hostID, uint8 ch){
+/**
+ * @brief 呼叫函数
+ * 
+ * @param imei IMEI
+ * @param ch 通道号
+ */
+static void call_imei(char* imei, uint8 ch, Noman_CB* Noman)
+{
+	cancel_imei(Noman->Last, ch);
+    if(imei != NULL){
+        if(MyNomanAPI.call_imei != NULL){
+            MyNomanAPI.call_imei(imei, ch);
+        }
+	}
+	Noman->Last = imei;
+}
+
+/**
+ * @brief 无人值守轮播函数
+ * 
+ * @param Noman 无人值守控制块
+ * @param hostID 主机ID
+ * @param ch 通道号
+ * @return uint8 0:未产生拨打,1: 产生拨打,但未轮询完毕 2:轮训完毕 3:拨打结束 
+ * @note 第二次进来判断的时候直接拨打下一级
+ */
+static uint8 noman_recursion(Noman_CB* Noman, uint8 hostID, uint8 ch){
 	uint8 ret = 0;
 	/*进入此函数,默认该主机下帮有无人值守号码*/
 	
@@ -102,8 +110,14 @@ uint8 noman_recursion(Noman_CB* Noman, uint8 hostID, uint8 ch){
 	return ret;
 }
 
-/*无人值守开关判断*/
-uint8 noman_host_judge(Noman_CB* Noman, uint8 hostID)
+/**
+ * @brief 主机无人值守状态功能解析函数
+ * 
+ * @param Noman 无人值守控制块
+ * @param hostID 主机ID
+ * @return uint8 0:双关 1:单开 2:双开
+ */
+static uint8 noman_host_judge(Noman_CB* Noman, uint8 hostID)
 {
 	int ret = 0; 
 	if((Noman->host[hostID].nomanStatus == 1 || Noman->host[hostID].callStatus == 1) && Noman->host[hostID].nomanNum != 0){
@@ -124,8 +138,15 @@ uint8 noman_host_judge(Noman_CB* Noman, uint8 hostID)
 	return ret;
 }
 
-/*双开只拨打无人值守*/
-uint8 noman_host_branch(Noman_CB* Noman, uint8 hostID, uint8 ch)
+/**
+ * @brief 无人值守拨号逻辑选择函数
+ * 
+ * @param Noman 无人值守控制块
+ * @param hostID 主机ID
+ * @param ch 通道数
+ * @return uint8 0:error 1:呼叫中部号码 2:单级轮询完成 3:全部轮询完成
+ */
+static uint8 noman_host_branch(Noman_CB* Noman, uint8 hostID, uint8 ch)
 {
 	int ret = 0;
 	
@@ -152,6 +173,37 @@ uint8 noman_host_branch(Noman_CB* Noman, uint8 hostID, uint8 ch)
 			break;
 	}
 
+	return ret;
+}
+
+uint8 noman_televise(Noman_CB* Noman, uint8 ch)
+{
+    uint8 ret = 0;
+	
+	if(Noman->host[3].nomanNum != 0 && Noman->host[3].nomanStatus != 0){
+		/*如果分机开启无人值守*/ 
+		ret = noman_host_branch(Noman,3, ch);
+		if(ret==3){
+			/*轮呼完毕*/
+			cancel_imei(Noman->Last, ch);
+			printf("轮呼完毕\r\n");
+		}
+	}else if(Noman->hostStatus<Noman->hostNum){
+		/*防止末级主机双关,重复进入*/
+		ret = noman_host_branch(Noman, Noman->hostStatus, ch);
+		if(ret==3){
+			/*轮呼完毕*/
+			Noman->hostStatus = 0;
+			cancel_imei(Noman->Last, ch);
+			printf("轮呼完毕\r\n");
+		}else if(ret==2){
+			Noman->hostStatus++;
+			printf("转下一级\r\n");	
+		}
+	}else{
+		cancel_imei(Noman->Last, ch);
+		ret = 3;
+	}
 	return ret;
 }
 
@@ -222,26 +274,6 @@ uint8 host_imei_parse(Noman_CB* Noman, char *data)
     return Noman->hostNum;
 }
 
-void call_imei(char* imei, uint8 ch, Noman_CB* Noman)
-{
-	cancel_imei(Noman->Last, ch);
-    if(imei != NULL){
-        if(MyNomanAPI.call_imei != NULL){
-            MyNomanAPI.call_imei(imei, ch);
-        }
-	}
-	Noman->Last = imei;
-}
-
-void cancel_imei(char* imei, uint8 ch)
-{
-	if(imei != NULL){
-        if(MyNomanAPI.cancel_imei != NULL){
-            MyNomanAPI.cancel_imei(imei, ch);
-        }
-	}
-}
-
 void noman_clear(Noman_CB* Noman)
 {
     /*无人值守拨号指针归位*/
@@ -282,6 +314,8 @@ void my_call_noman(char* imei, uint8 ch)
 {
 	printf("呼叫: %15.15s\r\n",imei);
 }
+
+
 
 void my_cancel_noman(char* imei, uint8 ch)
 {
